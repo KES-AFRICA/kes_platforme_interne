@@ -1,10 +1,12 @@
 """
 Point d'entrée FastAPI.
-Configure CORS, monte les routeurs, expose /health.
+Configure CORS, gestionnaire d'erreurs global, monte les routeurs.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.api.v1.router import api_router
@@ -23,6 +25,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_handler(request: Request, exc: ValidationError):
+    """
+    Transforme les erreurs Pydantic en message lisible.
+    Sans ça, FastAPI renvoie un objet brut que React ne peut pas afficher.
+    """
+    errors = exc.errors()
+    messages = []
+    for err in errors:
+        field = " → ".join(str(loc) for loc in err.get("loc", []))
+        msg = err.get("msg", "Erreur de validation")
+        messages.append(f"{field} : {msg}" if field else msg)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": " | ".join(messages)},
+    )
+
+
+@app.exception_handler(422)
+async def unprocessable_handler(request: Request, exc):
+    """Attrape les 422 FastAPI natifs et les normalise."""
+    body = getattr(exc, "detail", None)
+    if isinstance(body, list):
+        messages = []
+        for err in body:
+            if isinstance(err, dict):
+                field = " → ".join(str(loc) for loc in err.get("loc", []))
+                msg = err.get("msg", "Erreur")
+                messages.append(f"{field} : {msg}" if field else msg)
+            else:
+                messages.append(str(err))
+        return JSONResponse(
+            status_code=422,
+            content={"detail": " | ".join(messages)},
+        )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": str(body) if body else "Données invalides."},
+    )
+
 
 app.include_router(api_router, prefix="/api/v1")
 

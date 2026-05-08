@@ -11,6 +11,9 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.api.v1.router import api_router
 
+from fastapi.staticfiles import StaticFiles
+import os
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
@@ -69,6 +72,10 @@ async def unprocessable_handler(request: Request, exc):
 
 
 app.include_router(api_router, prefix="/api/v1")
+
+uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 @app.get("/health", tags=["system"])

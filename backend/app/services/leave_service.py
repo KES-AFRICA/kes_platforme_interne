@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.leave import LeaveRequest, RequestCategory, RequestStatus
+from app.models.leave import LeaveRequest, LeaveType, RequestCategory, RequestStatus
 from app.models.user import User, UserRole
 from app.schemas.leave import LeaveRequestCreate, LeaveRequestReview
 from app.utils.leave_utils import (
@@ -41,6 +41,22 @@ async def create_request(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Les administrateurs ne peuvent pas créer de demandes.",
+        )
+    
+    # Vérifier qu'il n'y a pas déjà une demande en attente
+    existing_pending = await db.execute(
+        select(func.count()).select_from(LeaveRequest).where(
+            LeaveRequest.requester_id == requester.id,
+            LeaveRequest.status.in_([
+                RequestStatus.PENDING_MANAGER,
+                RequestStatus.PENDING_ADMIN,
+            ]),
+        )
+    )
+    if existing_pending.scalar_one() > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vous avez déjà une demande en attente de traitement.",
         )
 
     # Délai minimum 48h
@@ -300,10 +316,13 @@ async def get_all_requests(
 
 
 async def get_stats(
-    db:   AsyncSession,
-    user: User,
+    db:         AsyncSession,
+    user:       User,
+    date_from:  Optional[datetime] = None,
+    date_to:    Optional[datetime] = None,
+    category:   Optional[RequestCategory] = None,
 ) -> dict:
-    """Stats agrégées selon le rôle."""
+    """Stats agrégées avec filtres temporels et par catégorie."""
 
     async def count(filters: list) -> int:
         q = select(func.count()).select_from(LeaveRequest)
@@ -315,6 +334,54 @@ async def get_stats(
     if user.role == UserRole.AGENT:
         base = [LeaveRequest.requester_id == user.id]
 
+    if date_from:
+        base.append(LeaveRequest.created_at >= date_from)
+    if date_to:
+        base.append(LeaveRequest.created_at <= date_to)
+    if category:
+        base.append(LeaveRequest.category == category)
+
+    # Stats par type de congé
+    by_leave_type = {}
+    for lt in LeaveType:
+        by_leave_type[lt.value] = await count([
+            *base,
+            LeaveRequest.category == RequestCategory.LEAVE,
+            LeaveRequest.leave_type == lt,
+        ])
+
+    # Stats mensuelles
+    monthly = []
+    now = datetime.now(timezone.utc)
+    for i in range(11, -1, -1):
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        month_start = month_start.replace(
+            month=((now.month - i - 1) % 12) + 1,
+            year=now.year - (1 if now.month - i <= 0 else 0),
+        )
+        if month_start.month == 12:
+            month_end = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            month_end = month_start.replace(month=month_start.month + 1)
+
+        month_total = await count([
+            *base,
+            LeaveRequest.created_at >= month_start,
+            LeaveRequest.created_at < month_end,
+        ])
+        month_approved = await count([
+            *base,
+            LeaveRequest.created_at >= month_start,
+            LeaveRequest.created_at < month_end,
+            LeaveRequest.status == RequestStatus.APPROVED,
+        ])
+        monthly.append({
+            "month": month_start.strftime("%Y-%m"),
+            "label": month_start.strftime("%b %Y"),
+            "total": month_total,
+            "approved": month_approved,
+        })
+
     return {
         "total":           await count(base),
         "approved":        await count([*base, LeaveRequest.status == RequestStatus.APPROVED]),
@@ -323,4 +390,6 @@ async def get_stats(
         "pending_admin":   await count([*base, LeaveRequest.status == RequestStatus.PENDING_ADMIN]),
         "leaves":          await count([*base, LeaveRequest.category == RequestCategory.LEAVE]),
         "permissions":     await count([*base, LeaveRequest.category == RequestCategory.PERMISSION]),
+        "by_leave_type":   by_leave_type,
+        "monthly":         monthly,
     }

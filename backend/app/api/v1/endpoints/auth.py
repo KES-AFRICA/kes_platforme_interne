@@ -19,6 +19,7 @@ from app.models.user import User
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse
 from app.schemas.user import UserResponse
 from app.services import user_service
+from app.schemas.auth import ChangePasswordRequest
 
 router = APIRouter()
 
@@ -87,3 +88,32 @@ async def logout(current_user: User = Depends(get_current_user)):
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Changement de mot de passe personnel.
+    Accessible à tous les rôles connectés.
+    Vérifie l'ancien mot de passe avant modification.
+    """
+    if not user_service.verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mot de passe actuel incorrect.",
+        )
+
+    if data.current_password == data.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le nouveau mot de passe doit être différent de l'ancien.",
+        )
+
+    current_user.hashed_password = user_service.hash_password(data.new_password)
+    await db.flush()
+    await db.refresh(current_user)
+
+    return {"detail": "Mot de passe mis à jour avec succès."}

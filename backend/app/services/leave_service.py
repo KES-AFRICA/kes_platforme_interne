@@ -42,6 +42,22 @@ async def create_request(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Les administrateurs ne peuvent pas créer de demandes.",
         )
+    
+    # Vérifier qu'il n'y a pas déjà une demande en attente
+    existing_pending = await db.execute(
+        select(func.count()).select_from(LeaveRequest).where(
+            LeaveRequest.requester_id == requester.id,
+            LeaveRequest.status.in_([
+                RequestStatus.PENDING_MANAGER,
+                RequestStatus.PENDING_ADMIN,
+            ]),
+        )
+    )
+    if existing_pending.scalar_one() > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vous avez déjà une demande en attente de traitement.",
+        )
 
     # Délai minimum 48h
     if not validate_minimum_notice(data.date_start):
@@ -304,8 +320,9 @@ async def get_stats(
     user:       User,
     date_from:  Optional[datetime] = None,
     date_to:    Optional[datetime] = None,
+    category:   Optional[RequestCategory] = None,
 ) -> dict:
-    """Stats agrégées avec filtres temporels optionnels."""
+    """Stats agrégées avec filtres temporels et par catégorie."""
 
     async def count(filters: list) -> int:
         q = select(func.count()).select_from(LeaveRequest)
@@ -321,6 +338,8 @@ async def get_stats(
         base.append(LeaveRequest.created_at >= date_from)
     if date_to:
         base.append(LeaveRequest.created_at <= date_to)
+    if category:
+        base.append(LeaveRequest.category == category)
 
     # Stats par type de congé
     by_leave_type = {}
@@ -331,7 +350,7 @@ async def get_stats(
             LeaveRequest.leave_type == lt,
         ])
 
-    # Stats mensuelles (12 derniers mois)
+    # Stats mensuelles
     monthly = []
     now = datetime.now(timezone.utc)
     for i in range(11, -1, -1):

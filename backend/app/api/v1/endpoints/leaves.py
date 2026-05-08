@@ -30,13 +30,25 @@ from app.services import leave_service
 router = APIRouter()
 
 
-@router.get("/stats", response_model=LeaveStatsResponse)
+@router.get("/stats")
 async def get_stats(
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to:   Optional[str] = Query(None, description="YYYY-MM-DD"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await leave_service.get_stats(db, current_user)
+    from datetime import datetime, timezone
 
+    df = None
+    dt = None
+    if date_from:
+        df = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if date_to:
+        dt = datetime.strptime(date_to, "%Y-%m-%d").replace(
+            hour=23, minute=59, second=59, tzinfo=timezone.utc
+        )
+
+    return await leave_service.get_stats(db, current_user, df, dt)
 
 @router.get("/my", response_model=LeaveRequestListResponse)
 async def get_my_requests(
